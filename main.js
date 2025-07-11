@@ -30,10 +30,10 @@ function createWindow () {
 app.whenReady().then(() => {
   createWindow();
 
-  ipcMain.handle('save-script', async (event, script) => {
+  ipcMain.handle('save-script', async (event, { english_text, japanese_text }) => {
     return new Promise((resolve, reject) => {
-      db.run('INSERT INTO scripts (title, english_text, japanese_text) VALUES (?, ?, ?)', 
-        [script.title, script.english_text, script.japanese_text], 
+      db.run('INSERT INTO scripts (english_text, japanese_text) VALUES (?, ?)', 
+        [english_text, japanese_text], 
         function(err) {
           if (err) {
             console.error('Error inserting script:', err.message);
@@ -49,7 +49,7 @@ app.whenReady().then(() => {
 
   ipcMain.handle('get-all-scripts', async () => {
     return new Promise((resolve, reject) => {
-      db.all('SELECT id, title, english_text, japanese_text FROM scripts', [], (err, rows) => {
+      db.all('SELECT id, english_text, japanese_text FROM scripts', [], (err, rows) => {
         if (err) {
           console.error('Error fetching scripts:', err.message);
           reject(err.message);
@@ -60,20 +60,15 @@ app.whenReady().then(() => {
     });
   });
 
-  ipcMain.handle('search-scripts', async (event, { query, searchBy }) => {
+  ipcMain.handle('search-scripts', async (event, { query }) => {
     return new Promise((resolve, reject) => {
       const searchTerm = `%${query}%`;
-      let sql = 'SELECT id, title, english_text, japanese_text FROM scripts';
+      let sql = 'SELECT id, english_text, japanese_text FROM scripts';
       let params = [];
 
       if (query) {
-        if (searchBy === 'title') {
-          sql += ' WHERE title LIKE ?';
-          params = [searchTerm];
-        } else { // searchBy === 'all' or undefined
-          sql += ' WHERE title LIKE ? OR english_text LIKE ? OR japanese_text LIKE ?';
-          params = [searchTerm, searchTerm, searchTerm];
-        }
+        sql += ' WHERE english_text LIKE ? OR japanese_text LIKE ?';
+        params = [searchTerm, searchTerm];
       }
 
       db.all(sql, params, (err, rows) => {
@@ -107,16 +102,16 @@ app.whenReady().then(() => {
     });
   });
 
-  ipcMain.handle('update-script', async (event, script) => {
+  ipcMain.handle('update-script', async (event, { id, english_text, japanese_text }) => {
     return new Promise((resolve, reject) => {
-      db.run('UPDATE scripts SET title = ?, english_text = ?, japanese_text = ? WHERE id = ?', 
-        [script.title, script.english_text, script.japanese_text, script.id], 
+      db.run('UPDATE scripts SET english_text = ?, japanese_text = ? WHERE id = ?', 
+        [english_text, japanese_text, id], 
         function(err) {
           if (err) {
             console.error('Error updating script:', err.message);
             reject(err.message);
           } else {
-            console.log(`A row has been updated with rowid ${script.id}`);
+            console.log(`A row has been updated with rowid ${id}`);
             resolve(this.changes);
           }
         }
@@ -124,14 +119,14 @@ app.whenReady().then(() => {
     });
   });
 
-  ipcMain.handle('export-script', async (event, { title, englishText, japaneseText }) => {
+  ipcMain.handle('export-script', async (event, { englishText, japaneseText }) => {
     const { dialog } = require('electron');
     const fs = require('fs');
 
     try {
       const { filePath } = await dialog.showSaveDialog({
         title: 'スクリプトをエクスポート',
-        defaultPath: `${title}.txt`,
+        defaultPath: 'script.txt',
         filters: [
           { name: 'Text Files', extensions: ['txt'] },
           { name: 'All Files', extensions: ['*'] }
@@ -139,7 +134,7 @@ app.whenReady().then(() => {
       });
 
       if (filePath) {
-        const content = `--- ${title} ---\n\n[English]\n${englishText}\n\n[Japanese]\n${japaneseText}`;
+        const content = `[English]\n${englishText}\n\n[Japanese]\n${japaneseText}`;
         fs.writeFileSync(filePath, content);
         return { success: true, filePath };
       } else {
@@ -147,6 +142,61 @@ app.whenReady().then(() => {
       }
     } catch (error) {
       console.error('Error exporting script:', error);
+      return { success: false, error: error.message };
+    }
+  });
+
+  ipcMain.handle('import-script', async (event) => {
+    const { dialog } = require('electron');
+    const fs = require('fs');
+
+    try {
+      const { filePaths: englishFilePaths } = await dialog.showOpenDialog({
+        title: '英語スクリプトファイルを選択',
+        properties: ['openFile'],
+        filters: [
+          { name: 'Text Files', extensions: ['txt'] },
+          { name: 'All Files', extensions: ['*'] }
+        ]
+      });
+
+      if (!englishFilePaths || englishFilePaths.length === 0) {
+        return { success: false, cancelled: true };
+      }
+
+      const { filePaths: japaneseFilePaths } = await dialog.showOpenDialog({
+        title: '日本語スクリプトファイルを選択',
+        properties: ['openFile'],
+        filters: [
+          { name: 'Text Files', extensions: ['txt'] },
+          { name: 'All Files', extensions: ['*'] }
+        ]
+      });
+
+      if (!japaneseFilePaths || japaneseFilePaths.length === 0) {
+        return { success: false, cancelled: true };
+      }
+
+      const englishText = fs.readFileSync(englishFilePaths[0], 'utf8');
+      const japaneseText = fs.readFileSync(japaneseFilePaths[0], 'utf8');
+
+      return new Promise((resolve, reject) => {
+        db.run('INSERT INTO scripts (english_text, japanese_text) VALUES (?, ?)', 
+          [englishText, japaneseText], 
+          function(err) {
+            if (err) {
+              console.error('Error importing script:', err.message);
+              reject({ success: false, error: err.message });
+            } else {
+              console.log(`A row has been inserted with rowid ${this.lastID}`);
+              resolve({ success: true, id: this.lastID, englishText, japaneseText });
+            }
+          }
+        );
+      });
+
+    } catch (error) {
+      console.error('Error during import process:', error);
       return { success: false, error: error.message };
     }
   });
